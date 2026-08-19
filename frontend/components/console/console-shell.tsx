@@ -4,6 +4,7 @@ import * as React from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
+  IconAdjustments,
   IconHistory,
   IconLogout,
   IconMenu2,
@@ -19,6 +20,7 @@ import { cn } from "@/lib/utils"
 const links = [
   { label: "Nodes", href: "/dashboard", icon: IconServer },
   { label: "History", href: "/history", icon: IconHistory },
+  { label: "Config", href: "/config", icon: IconAdjustments },
   { label: "Settings", href: "/settings", icon: IconSettings },
 ] as const
 

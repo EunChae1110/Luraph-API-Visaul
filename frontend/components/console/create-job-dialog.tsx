@@ -1,13 +1,23 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { FileIcon, FolderIcon, PlayIcon, XIcon } from "lucide-react"
+import {
+  BookmarkIcon,
+  FileIcon,
+  FolderIcon,
+  PlayIcon,
+  SaveIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { OptionControl } from "@/components/console/option-control"
 import {
   Dialog,
   DialogContent,
@@ -31,51 +41,36 @@ import {
   SelectGroup,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { ApiError, createJob } from "@/lib/api"
 import { ensureFollow } from "@/lib/job-follow"
 import type { HistoryJob } from "@/lib/jobs"
-import type {
-  LuraphNode,
-  LuraphOptionInfo,
-  LuraphOptionList,
-  LuraphOptionValue,
+import {
+  buildDefaultOptions,
+  dependenciesMet,
+  mergeOptionsWithNode,
+  type LuraphNode,
+  type LuraphOptionList,
+  type LuraphOptionValue,
 } from "@/lib/luraph-types"
-import { cn } from "@/lib/utils"
+import {
+  deleteNodeConfig,
+  getDefaultNodeConfig,
+  getDefaultNodeConfigId,
+  listNodeConfigs,
+  saveNodeConfig,
+  setDefaultNodeConfig,
+  type NodeConfig,
+} from "@/lib/node-configs"
 
+const DEFAULTS_VALUE = "__defaults__"
 const SCRIPT_EXT = /\.(lua|luau|txt)$/i
 
 type PickedFile = {
   id: string
   file: File
   relativePath: string
-}
-
-function defaultOptionValue(option: LuraphOptionInfo): LuraphOptionValue {
-  if (option.type === "CHECKBOX") return false
-  if (option.type === "DROPDOWN") return option.choices[0] ?? ""
-  return ""
-}
-
-function buildDefaults(node: LuraphNode): LuraphOptionList {
-  const next: LuraphOptionList = {}
-  for (const [id, option] of Object.entries(node.options)) {
-    next[id] = defaultOptionValue(option)
-  }
-  return next
-}
-
-function dependenciesMet(
-  option: LuraphOptionInfo,
-  values: LuraphOptionList
-): boolean {
-  if (!option.dependencies) return true
-  return Object.entries(option.dependencies).every(([key, allowed]) => {
-    const current = values[key]
-    return allowed.some((v) => v === current)
-  })
 }
 
 function formatBytes(size: number) {
@@ -115,23 +110,129 @@ export function CreateJobDialog({
   const [useTokens, setUseTokens] = React.useState(false)
   const [enforceSettings, setEnforceSettings] = React.useState(true)
   const [options, setOptions] = React.useState<LuraphOptionList>(() =>
-    buildDefaults(node)
+    buildDefaultOptions(node)
+  )
+  const [configs, setConfigs] = React.useState<NodeConfig[]>([])
+  const [selectedConfigId, setSelectedConfigId] = React.useState(DEFAULTS_VALUE)
+  const [configName, setConfigName] = React.useState("")
+  const [makeDefault, setMakeDefault] = React.useState(false)
+  const [defaultConfigId, setDefaultConfigId] = React.useState<string | null>(
+    null
   )
   const [error, setError] = React.useState<string | null>(null)
   const [pending, setPending] = React.useState(false)
 
+  function refreshConfigs() {
+    setConfigs(listNodeConfigs(nodeId))
+    setDefaultConfigId(getDefaultNodeConfigId(nodeId))
+  }
+
+  function applyConfig(config: NodeConfig | null) {
+    const currentDefault = getDefaultNodeConfigId(nodeId)
+    setDefaultConfigId(currentDefault)
+    if (!config) {
+      setSelectedConfigId(DEFAULTS_VALUE)
+      setConfigName("")
+      setMakeDefault(false)
+      setOptions(buildDefaultOptions(node))
+      setUseTokens(false)
+      setEnforceSettings(true)
+      return
+    }
+    setSelectedConfigId(config.id)
+    setConfigName(config.name)
+    setMakeDefault(currentDefault === config.id)
+    setOptions(mergeOptionsWithNode(node, config.options))
+    setUseTokens(config.useTokens)
+    setEnforceSettings(config.enforceSettings)
+  }
+
   React.useEffect(() => {
     if (!open) return
-    setOptions(buildDefaults(node))
+    const saved = listNodeConfigs(nodeId)
+    setConfigs(saved)
     setPicked([])
     setError(null)
     setPending(false)
     if (filesInputRef.current) filesInputRef.current.value = ""
     if (folderInputRef.current) folderInputRef.current.value = ""
+
+    const fallback = getDefaultNodeConfig(nodeId)
+    applyConfig(fallback)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only when the dialog opens for this node
   }, [open, node, nodeId])
 
   function setOption(id: string, value: LuraphOptionValue) {
     setOptions((prev) => ({ ...prev, [id]: value }))
+  }
+
+  function onSelectConfig(id: string | null) {
+    if (!id || id === DEFAULTS_VALUE) {
+      applyConfig(null)
+      return
+    }
+    const config = configs.find((item) => item.id === id) ?? null
+    applyConfig(config)
+  }
+
+  function onSaveConfig() {
+    try {
+      const saved = saveNodeConfig({
+        id:
+          selectedConfigId !== DEFAULTS_VALUE &&
+          configs.some((item) => item.id === selectedConfigId)
+            ? selectedConfigId
+            : undefined,
+        name: configName,
+        nodeId,
+        options,
+        useTokens,
+        enforceSettings,
+        makeDefault,
+      })
+      refreshConfigs()
+      setSelectedConfigId(saved.id)
+      setConfigName(saved.name)
+      toast.success(`Saved configuration “${saved.name}”`)
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Could not save configuration."
+      setError(message)
+      toast.error(message)
+    }
+  }
+
+  function onSaveConfigAsNew() {
+    try {
+      const saved = saveNodeConfig({
+        name: configName,
+        nodeId,
+        options,
+        useTokens,
+        enforceSettings,
+        makeDefault,
+      })
+      refreshConfigs()
+      setSelectedConfigId(saved.id)
+      setConfigName(saved.name)
+      toast.success(`Created configuration “${saved.name}”`)
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Could not save configuration."
+      setError(message)
+      toast.error(message)
+    }
+  }
+
+  function onDeleteConfig() {
+    if (selectedConfigId === DEFAULTS_VALUE) return
+    const current = configs.find((item) => item.id === selectedConfigId)
+    deleteNodeConfig(selectedConfigId)
+    refreshConfigs()
+    applyConfig(getDefaultNodeConfig(nodeId))
+    toast.success(
+      current ? `Deleted “${current.name}”` : "Deleted configuration"
+    )
   }
 
   function mergePicked(next: PickedFile[]) {
@@ -173,8 +274,12 @@ export function CreateJobDialog({
 
     try {
       const created: HistoryJob[] = []
+      const batchId =
+        picked.length > 1 ? crypto.randomUUID() : undefined
       for (const item of picked) {
-        const name = item.file.name.slice(0, 255)
+        const name = (item.relativePath || item.file.name)
+          .replaceAll("\\", "/")
+          .slice(0, 255)
         const script = await item.file.text()
         const job = await createJob({
           node: nodeId,
@@ -183,6 +288,7 @@ export function CreateJobDialog({
           options,
           useTokens,
           enforceSettings,
+          batchId,
         })
         created.push(job)
         // Kick off status poll immediately (History page will also pick these up)
@@ -192,7 +298,7 @@ export function CreateJobDialog({
       toast.success(
         created.length === 1
           ? `Queued ${created[0].fileName} — auto-following status…`
-          : `Queued ${created.length} jobs — auto-following status…`
+          : `Queued batch of ${created.length} jobs — auto-following status…`
       )
       onCreated?.()
       setOpen(false)
@@ -210,6 +316,11 @@ export function CreateJobDialog({
   }
 
   const optionEntries = Object.entries(node.options)
+  const selectedConfigLabel =
+    selectedConfigId === DEFAULTS_VALUE
+      ? "Node defaults"
+      : (configs.find((config) => config.id === selectedConfigId)?.name ??
+        "Node defaults")
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -230,7 +341,7 @@ export function CreateJobDialog({
           <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-12">
             <DialogTitle>Create job</DialogTitle>
             <DialogDescription className="font-mono text-xs">
-              createNewJob · node={nodeId}
+              You selected <strong className="text-primary">{nodeId}</strong> to create new obfuscated code.
             </DialogDescription>
           </DialogHeader>
 
@@ -334,10 +445,123 @@ export function CreateJobDialog({
 
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-sm font-medium">options</h3>
+                  <h3 className="text-sm font-medium">Options</h3>
                   <Badge variant="outline" className="rounded-full">
                     {optionEntries.length}
                   </Badge>
+                </div>
+
+                <div className="flex flex-col gap-3 rounded-xl border border-border p-3">
+                  <div className="flex flex-col gap-2">
+                    <FieldLabel htmlFor="node-config">Configuration</FieldLabel>
+                    <Select
+                      value={selectedConfigId}
+                      onValueChange={onSelectConfig}
+                    >
+                        <SelectTrigger
+                          id="node-config"
+                          className="w-full min-w-0 rounded-full"
+                        >
+                          <span className="flex flex-1 truncate text-left">
+                            {selectedConfigLabel}
+                            {selectedConfigId !== DEFAULTS_VALUE &&
+                            defaultConfigId === selectedConfigId
+                              ? " · default"
+                              : ""}
+                          </span>
+                        </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value={DEFAULTS_VALUE}>
+                            Node defaults
+                          </SelectItem>
+                          {configs.map((config) => (
+                            <SelectItem key={config.id} value={config.id}>
+                              {config.name}
+                              {defaultConfigId === config.id
+                                ? " · default"
+                                : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FieldDescription>
+                      Save this node’s option values and reuse them on the next
+                      job.                       Manage all presets from{" "}
+                      <Link
+                        href="/config"
+                        className="text-foreground underline underline-offset-2"
+                      >
+                        Config
+                      </Link>
+                      . Defaults apply automatically when you reopen this
+                      dialog.
+                    </FieldDescription>
+                  </div>
+
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Input
+                      value={configName}
+                      onChange={(e) => setConfigName(e.target.value)}
+                      placeholder="Configuration name"
+                      maxLength={64}
+                      className="font-mono text-sm"
+                    />
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="rounded-full"
+                        onClick={onSaveConfig}
+                      >
+                        <SaveIcon data-icon="inline-start" />
+                        {selectedConfigId === DEFAULTS_VALUE
+                          ? "Save"
+                          : "Update"}
+                      </Button>
+                      {selectedConfigId !== DEFAULTS_VALUE ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="rounded-full"
+                          onClick={onSaveConfigAsNew}
+                        >
+                          <BookmarkIcon data-icon="inline-start" />
+                          Save as new
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="rounded-full"
+                        disabled={selectedConfigId === DEFAULTS_VALUE}
+                        onClick={onDeleteConfig}
+                      >
+                        <Trash2Icon data-icon="inline-start" />
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={makeDefault}
+                      onCheckedChange={(checked) => {
+                        const next = checked === true
+                        setMakeDefault(next)
+                        if (selectedConfigId !== DEFAULTS_VALUE) {
+                          setDefaultNodeConfig(
+                            nodeId,
+                            next ? selectedConfigId : null
+                          )
+                          setDefaultConfigId(next ? selectedConfigId : null)
+                        }
+                      }}
+                      disabled={selectedConfigId === DEFAULTS_VALUE}
+                    />
+                    Use as default for {nodeId}
+                  </label>
                 </div>
 
                 <div className="flex flex-col gap-3 rounded-xl border border-border p-3">
@@ -403,91 +627,12 @@ export function CreateJobDialog({
               {pending
                 ? "Queuing…"
                 : picked.length > 1
-                  ? `Create ${picked.length} jobs on ${nodeId}`
+                  ? `Create batch of ${picked.length} on ${nodeId}`
                   : `Create job on ${nodeId}`}
             </Button>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
-  )
-}
-
-function OptionControl({
-  optionId,
-  option,
-  value,
-  disabled,
-  onChange,
-}: {
-  optionId: string
-  option: LuraphOptionInfo
-  value: LuraphOptionValue | undefined
-  disabled?: boolean
-  onChange: (value: LuraphOptionValue) => void
-}) {
-  return (
-    <div className={cn(disabled && "pointer-events-none opacity-45")}>
-      <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-        <span className="text-sm font-medium">{option.name}</span>
-        <Badge variant="secondary" className="rounded-full text-[10px]">
-          {option.type}
-        </Badge>
-        {option.required ? (
-          <Badge className="rounded-full text-[10px]">required</Badge>
-        ) : null}
-        {disabled ? (
-          <Badge variant="outline" className="rounded-full text-[10px]">
-            locked
-          </Badge>
-        ) : null}
-      </div>
-      <p className="mb-2 font-mono text-[11px] text-muted-foreground">
-        {optionId}
-      </p>
-
-      {option.type === "CHECKBOX" ? (
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox
-            checked={Boolean(value)}
-            onCheckedChange={(checked) => onChange(checked === true)}
-            disabled={disabled}
-          />
-          Enabled
-        </label>
-      ) : null}
-
-      {option.type === "DROPDOWN" ? (
-        <Select
-          value={String(value ?? "")}
-          onValueChange={(next) => {
-            if (next != null) onChange(next)
-          }}
-          disabled={disabled}
-        >
-          <SelectTrigger className="w-full min-w-0 rounded-full">
-            <SelectValue placeholder="Select…" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              {option.choices.map((choice) => (
-                <SelectItem key={choice} value={choice}>
-                  {choice}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-      ) : null}
-
-      {option.type === "TEXT" ? (
-        <Input
-          value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
-          disabled={disabled}
-          className="font-mono text-sm"
-        />
-      ) : null}
-    </div>
   )
 }

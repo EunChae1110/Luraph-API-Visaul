@@ -3,9 +3,12 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import {
+  ChevronDownIcon,
+  ChevronRightIcon,
   DownloadIcon,
   FilterIcon,
   HistoryIcon,
+  LayersIcon,
   Loader2Icon,
   MoreHorizontalIcon,
   RefreshCwIcon,
@@ -49,8 +52,12 @@ import {
   getStoredApiKey,
 } from "@/lib/api"
 import { ensureFollow, isFollowing } from "@/lib/job-follow"
-import type { HistoryJob, JobState } from "@/lib/jobs"
-import { isInFlight } from "@/lib/jobs"
+import type { HistoryGroup, HistoryJob, JobState } from "@/lib/jobs"
+import {
+  batchLabel,
+  groupHistoryJobs,
+  isInFlight,
+} from "@/lib/jobs"
 import { cn } from "@/lib/utils"
 
 const FILTERS: Array<{ id: "all" | JobState; label: string }> = [
@@ -87,6 +94,7 @@ export function HistoryConsole() {
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
   const [busyId, setBusyId] = React.useState<string | null>(null)
+  const [expanded, setExpanded] = React.useState<Record<string, boolean>>({})
 
   const load = React.useCallback(
     async (opts?: { quiet?: boolean }) => {
@@ -232,16 +240,48 @@ export function HistoryConsole() {
     }
   }
 
-  const filtered = jobs.filter((job) => {
-    const matchFilter = filter === "all" || job.state === filter
+  async function handleDownloadBatch(group: HistoryGroup) {
+    const done = group.jobs.filter((job) => job.state === "done")
+    if (done.length === 0) {
+      toast.error("No finished files in this batch yet")
+      return
+    }
+    setBusyId(group.key)
+    try {
+      for (const job of done) {
+        await downloadJob(job.id)
+      }
+      toast.success(
+        done.length === 1
+          ? `Downloaded ${done[0].fileName}`
+          : `Downloaded ${done.length} files`
+      )
+      await load()
+    } catch (err) {
+      const message =
+        err instanceof ApiError ? err.message : "Download failed"
+      toast.error(message)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const grouped = groupHistoryJobs(jobs).filter((group) => {
     const q = query.trim().toLowerCase()
     const matchQuery =
       !q ||
-      job.id.toLowerCase().includes(q) ||
-      job.fileName.toLowerCase().includes(q) ||
-      job.nodeId.toLowerCase().includes(q)
-    return matchFilter && matchQuery
+      group.jobs.some(
+        (job) =>
+          job.id.toLowerCase().includes(q) ||
+          job.fileName.toLowerCase().includes(q) ||
+          job.nodeId.toLowerCase().includes(q)
+      )
+    const matchFilter =
+      filter === "all" || group.jobs.some((job) => job.state === filter)
+    return matchQuery && matchFilter
   })
+
+  const diagramJobs = grouped.flatMap((group) => group.jobs)
 
   const counts = {
     all: jobs.length,
@@ -269,15 +309,6 @@ export function HistoryConsole() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {inflightKey ? (
-                <Badge variant="outline" className="rounded-full">
-                  auto-following…
-                </Badge>
-              ) : (
-                <Badge variant="outline" className="rounded-full">
-                  live · SQLite
-                </Badge>
-              )}
               <Button
                 size="sm"
                 variant="ghost"
@@ -339,7 +370,7 @@ export function HistoryConsole() {
           </div>
         </section>
 
-        <HistoryDiagram jobs={filtered} />
+        <HistoryDiagram jobs={diagramJobs} />
 
         <section className="overflow-hidden rounded-xl border border-border">
           <ScrollArea className="h-[560px]">
@@ -368,7 +399,7 @@ export function HistoryConsole() {
                       </span>
                     </TableCell>
                   </TableRow>
-                ) : filtered.length === 0 ? (
+                ) : grouped.length === 0 ? (
                   <TableRow>
                     <TableCell
                       colSpan={5}
@@ -378,43 +409,112 @@ export function HistoryConsole() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filtered.map((job) => (
-                    <TableRow key={job.id}>
-                      <TableCell>
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium">
-                            {job.fileName}
-                          </div>
-                          <div className="truncate font-mono text-[11px] text-muted-foreground">
-                            {job.id}
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {job.nodeId}
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          variant={stateVariant(job.state)}
-                          className="rounded-full capitalize"
-                        >
-                          {job.state}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {formatTime(job.createdAt)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <JobRowMenu
+                  grouped.map((group) => {
+                    const isBatch = group.jobs.length > 1
+                    const open =
+                      group.batchId == null
+                        ? false
+                        : (expanded[group.batchId] ??
+                          group.jobs.some(
+                            (job) => isInFlight(job) || job.state === "failed"
+                          ))
+                    const doneCount = group.jobs.filter(
+                      (job) => job.state === "done"
+                    ).length
+
+                    if (!isBatch) {
+                      const job = group.jobs[0]
+                      return (
+                        <JobTableRow
+                          key={job.id}
                           job={job}
                           busy={busyId === job.id}
                           onSeeDetails={() => setDetailJob(job)}
                           onPoll={() => void handlePoll(job)}
                           onDownload={() => void handleDownload(job)}
                         />
-                      </TableCell>
-                    </TableRow>
-                  ))
+                      )
+                    }
+
+                    return (
+                      <React.Fragment key={group.key}>
+                        <TableRow>
+                          <TableCell>
+                            <button
+                              type="button"
+                              className="flex min-w-0 items-center gap-2 text-left"
+                              onClick={() =>
+                                setExpanded((prev) => ({
+                                  ...prev,
+                                  [group.batchId!]: !open,
+                                }))
+                              }
+                            >
+                              {open ? (
+                                <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                              ) : (
+                                <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                              )}
+                              <LayersIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-medium">
+                                  Batch · {batchLabel(group.jobs)}
+                                </div>
+                                <div className="truncate text-[11px] text-muted-foreground">
+                                  {doneCount}/{group.jobs.length} done
+                                </div>
+                              </div>
+                            </button>
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {group.nodeId}
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={stateVariant(group.state)}
+                              className="rounded-full capitalize"
+                            >
+                              {group.state}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="font-mono text-xs text-muted-foreground">
+                            {formatTime(group.createdAt)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              className="rounded-full"
+                              aria-label="Download finished files in batch"
+                              disabled={
+                                busyId === group.key || doneCount === 0
+                              }
+                              onClick={() => void handleDownloadBatch(group)}
+                            >
+                              {busyId === group.key ? (
+                                <Loader2Icon className="animate-spin" />
+                              ) : (
+                                <DownloadIcon />
+                              )}
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                        {open
+                          ? group.jobs.map((job) => (
+                              <JobTableRow
+                                key={job.id}
+                                job={job}
+                                nested
+                                busy={busyId === job.id}
+                                onSeeDetails={() => setDetailJob(job)}
+                                onPoll={() => void handlePoll(job)}
+                                onDownload={() => void handleDownload(job)}
+                              />
+                            ))
+                          : null}
+                      </React.Fragment>
+                    )
+                  })
                 )}
               </TableBody>
             </Table>
@@ -433,6 +533,56 @@ export function HistoryConsole() {
         onDownload={(job) => void handleDownload(job)}
       />
     </ConsoleShell>
+  )
+}
+
+function JobTableRow({
+  job,
+  nested,
+  busy,
+  onSeeDetails,
+  onPoll,
+  onDownload,
+}: {
+  job: HistoryJob
+  nested?: boolean
+  busy: boolean
+  onSeeDetails: () => void
+  onPoll: () => void
+  onDownload: () => void
+}) {
+  return (
+    <TableRow>
+      <TableCell>
+        <div className={cn("min-w-0", nested && "pl-8")}>
+          <div className="truncate text-sm font-medium">{job.fileName}</div>
+          <div className="truncate font-mono text-[11px] text-muted-foreground">
+            {job.id}
+          </div>
+        </div>
+      </TableCell>
+      <TableCell className="font-mono text-xs">{job.nodeId}</TableCell>
+      <TableCell>
+        <Badge
+          variant={stateVariant(job.state)}
+          className="rounded-full capitalize"
+        >
+          {job.state}
+        </Badge>
+      </TableCell>
+      <TableCell className="font-mono text-xs text-muted-foreground">
+        {formatTime(job.createdAt)}
+      </TableCell>
+      <TableCell className="text-right">
+        <JobRowMenu
+          job={job}
+          busy={busy}
+          onSeeDetails={onSeeDetails}
+          onPoll={onPoll}
+          onDownload={onDownload}
+        />
+      </TableCell>
+    </TableRow>
   )
 }
 
@@ -531,6 +681,9 @@ function JobDetailsDialog({
 
         <div className="flex flex-col gap-3 text-sm">
           <DetailRow label="node" value={job.nodeId} />
+          {job.batchId ? (
+            <DetailRow label="batchId" value={job.batchId} />
+          ) : null}
           <DetailRow label="createdAt" value={formatTime(job.createdAt)} />
           <DetailRow label="finishedAt" value={formatTime(job.finishedAt)} />
           <DetailRow

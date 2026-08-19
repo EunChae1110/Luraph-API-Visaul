@@ -195,9 +195,9 @@ export function SettingsConsole() {
             className="rounded-full"
           >
             {connection === "ok"
-              ? "backend online"
+              ? "online"
               : connection === "error"
-                ? "backend offline"
+                ? "offline"
                 : "checking…"}
           </Badge>
         </section>

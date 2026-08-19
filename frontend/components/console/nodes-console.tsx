@@ -12,7 +12,11 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { ApiError, fetchJobs, fetchNodes, getStoredApiKey } from "@/lib/api"
-import type { HistoryJob } from "@/lib/jobs"
+import { batchLabel, groupHistoryJobs, type HistoryJob } from "@/lib/jobs"
+import {
+  NODE_CONFIGS_CHANGED,
+  listNodeConfigs,
+} from "@/lib/node-configs"
 import {
   optionStats,
   type LuraphNode,
@@ -41,6 +45,9 @@ export function NodesConsole() {
   const [selectedId, setSelectedId] = React.useState("")
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
+  const [configCounts, setConfigCounts] = React.useState<Record<string, number>>(
+    {}
+  )
 
   const load = React.useCallback(async () => {
     if (!getStoredApiKey()) {
@@ -74,12 +81,26 @@ export function NodesConsole() {
     void load()
   }, [load])
 
+  React.useEffect(() => {
+    function syncCounts() {
+      const next: Record<string, number> = {}
+      for (const id of Object.keys(data?.nodes ?? {})) {
+        next[id] = listNodeConfigs(id).length
+      }
+      setConfigCounts(next)
+    }
+    syncCounts()
+    window.addEventListener(NODE_CONFIGS_CHANGED, syncCounts)
+    return () => window.removeEventListener(NODE_CONFIGS_CHANGED, syncCounts)
+  }, [data])
+
   const recommendedId = data?.recommendedId ?? null
   const nodes = data?.nodes ?? {}
   const nodeEntries = Object.entries(nodes)
   const selected: LuraphNode | undefined = nodes[selectedId]
   const selectedOptions = selected ? Object.entries(selected.options) : []
   const stats = selected ? optionStats(selected) : null
+  const recentGroups = groupHistoryJobs(recentJobs).slice(0, 5)
 
   const avgCpu = Math.round(
     nodeEntries.reduce((sum, [, n]) => sum + n.cpuUsage, 0) /
@@ -191,6 +212,12 @@ export function NodesConsole() {
                     </div>
 
                     <div className="flex flex-wrap gap-1">
+                      {(configCounts[id] ?? 0) > 0 ? (
+                        <Badge variant="outline" className="rounded-full">
+                          {configCounts[id]} config
+                          {configCounts[id] === 1 ? "" : "s"}
+                        </Badge>
+                      ) : null}
                       {s.premium > 0 ? (
                         <Badge variant="outline" className="rounded-full">
                           {s.premium} premium
@@ -218,6 +245,11 @@ export function NodesConsole() {
               </div>
               {stats ? (
                 <div className="flex flex-wrap gap-1">
+                  {(configCounts[selectedId] ?? 0) > 0 ? (
+                    <Badge variant="secondary" className="rounded-full">
+                      {configCounts[selectedId]} saved
+                    </Badge>
+                  ) : null}
                   <Badge variant="outline" className="rounded-full">
                     {stats.total} total
                   </Badge>
@@ -272,31 +304,42 @@ export function NodesConsole() {
             </div>
             <ScrollArea className="h-[360px]">
               <ul className="flex flex-col">
-                {recentJobs.slice(0, 5).map((job, index) => (
-                  <li key={job.id}>
-                    {index > 0 ? <Separator /> : null}
-                    <div className="flex items-center justify-between gap-3 px-4 py-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm">{job.fileName}</div>
-                        <div className="font-mono text-[11px] text-muted-foreground">
-                          {job.nodeId} · {job.id}
+                {recentGroups.map((group, index) => {
+                  const isBatch = group.jobs.length > 1
+                  const job = group.jobs[0]
+                  return (
+                    <li key={group.key}>
+                      {index > 0 ? <Separator /> : null}
+                      <div className="flex items-center justify-between gap-3 px-4 py-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm">
+                            {isBatch
+                              ? `Batch · ${batchLabel(group.jobs)}`
+                              : job.fileName}
+                          </div>
+                          <div className="font-mono text-[11px] text-muted-foreground">
+                            {group.nodeId}
+                            {isBatch
+                              ? ` · ${group.jobs.filter((item) => item.state === "done").length}/${group.jobs.length} done`
+                              : ` · ${job.id}`}
+                          </div>
                         </div>
+                        <Badge
+                          variant={
+                            group.state === "done"
+                              ? "secondary"
+                              : group.state === "failed"
+                                ? "destructive"
+                                : "outline"
+                          }
+                          className="rounded-full"
+                        >
+                          {group.state}
+                        </Badge>
                       </div>
-                      <Badge
-                        variant={
-                          job.state === "done"
-                            ? "secondary"
-                            : job.state === "failed"
-                              ? "destructive"
-                              : "outline"
-                        }
-                        className="rounded-full"
-                      >
-                        {job.state}
-                      </Badge>
-                    </div>
-                  </li>
-                ))}
+                    </li>
+                  )
+                })}
                 {!loading && recentJobs.length === 0 ? (
                   <li className="px-4 py-8 text-center text-sm text-muted-foreground">
                     No jobs yet

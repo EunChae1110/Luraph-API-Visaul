@@ -20,14 +20,6 @@ pub fn run() {
     tauri::Builder::default()
         .manage(BackendShutdown(Mutex::new(Some(shutdown_tx))))
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
-
             let data_dir = app
                 .path()
                 .app_data_dir()

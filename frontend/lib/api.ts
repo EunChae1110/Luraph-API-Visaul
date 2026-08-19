@@ -164,6 +164,7 @@ export async function createJob(input: {
   options: LuraphOptionList
   useTokens?: boolean
   enforceSettings?: boolean
+  batchId?: string | null
 }) {
   return request<HistoryJob>("/api/v1/jobs", {
     method: "POST",
@@ -174,6 +175,7 @@ export async function createJob(input: {
       options: input.options,
       useTokens: input.useTokens ?? false,
       enforceSettings: input.enforceSettings ?? true,
+      batchId: input.batchId ?? null,
     },
   })
 }
