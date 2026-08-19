@@ -17,7 +17,6 @@ use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
 
-/// Luraph allows up to 50MB scripts; leave headroom for JSON wrapping.
 pub const MAX_BODY_BYTES: usize = 55 * 1024 * 1024;
 pub const DEFAULT_PORT: u16 = 8787;
 

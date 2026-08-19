@@ -17,6 +17,8 @@ pub struct HistoryJob {
     pub use_tokens: bool,
     /// Absolute path to local backup (survives Luraph 24h expiry).
     pub local_path: Option<String>,
+    /// Shared id when several files were submitted together. `None` for a single job.
+    pub batch_id: Option<String>,
 }
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
@@ -45,6 +47,12 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "jobs",
         "local_path",
         "ALTER TABLE jobs ADD COLUMN local_path TEXT",
+    )?;
+    ensure_column(
+        conn,
+        "jobs",
+        "batch_id",
+        "ALTER TABLE jobs ADD COLUMN batch_id TEXT",
     )?;
     Ok(())
 }
@@ -78,12 +86,13 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryJob> {
         result_file_name: row.get(7)?,
         use_tokens: row.get::<_, i64>(8)? != 0,
         local_path: row.get(9)?,
+        batch_id: row.get(10)?,
     })
 }
 
 const JOB_SELECT: &str = r#"
     SELECT id, file_name, node_id, state, created_at, finished_at,
-           error, result_file_name, use_tokens, local_path
+           error, result_file_name, use_tokens, local_path, batch_id
     FROM jobs
 "#;
 
@@ -98,8 +107,8 @@ pub fn insert_job(
         INSERT INTO jobs (
             id, api_key_hash, file_name, node_id, state,
             created_at, finished_at, error, result_file_name, use_tokens,
-            options_json, local_path
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            options_json, local_path, batch_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         "#,
         params![
             job.id,
@@ -114,6 +123,7 @@ pub fn insert_job(
             job.use_tokens as i64,
             options.to_string(),
             job.local_path,
+            job.batch_id,
         ],
     )?;
     Ok(())

@@ -36,6 +36,9 @@ struct CreateJobRequest {
     use_tokens: bool,
     #[serde(default = "default_enforce")]
     enforce_settings: bool,
+    /// Client-generated id when submitting several files as one batch.
+    #[serde(default)]
+    batch_id: Option<String>,
 }
 
 fn default_enforce() -> bool {
@@ -44,6 +47,21 @@ fn default_enforce() -> bool {
 
 fn empty_object() -> Value {
     json!({})
+}
+
+fn luraph_file_name(name: &str) -> &str {
+    name.rsplit(['/', '\\'])
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("script.lua")
+}
+
+fn backup_name<'a>(original: Option<&'a str>, downloaded: &'a str) -> &'a str {
+    original
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(downloaded)
 }
 
 fn db_lock(state: &AppState) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, AppError> {
@@ -100,13 +118,28 @@ async fn create_job(
         return Err(AppError::new(StatusCode::BAD_REQUEST, "script is required"));
     }
 
+    let batch_id = body
+        .batch_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    if let Some(id) = batch_id.as_ref() {
+        if id.len() > 64 {
+            return Err(AppError::new(
+                StatusCode::BAD_REQUEST,
+                "batchId must be at most 64 characters",
+            ));
+        }
+    }
+
     let client = state.client();
     let created = client
         .create_job(
             &api_key,
             body.node.trim(),
             &body.script,
-            body.file_name.trim(),
+            luraph_file_name(body.file_name.trim()),
             body.options.clone(),
             body.use_tokens,
             body.enforce_settings,
@@ -124,6 +157,7 @@ async fn create_job(
         result_file_name: None,
         use_tokens: body.use_tokens,
         local_path: None,
+        batch_id,
     };
 
     {
@@ -144,12 +178,14 @@ async fn poll_status(
     let api_key = require_api_key(&headers)?;
     let key_hash = hash_api_key(&api_key);
 
-    {
+    let existing = {
         let conn = db_lock(&state)?;
-        if db::get_job(&conn, &key_hash, &job_id)?.is_some() {
+        let job = db::get_job(&conn, &key_hash, &job_id)?;
+        if job.is_some() {
             let _ = db::mark_running(&conn, &key_hash, &job_id);
         }
-    }
+        job
+    };
 
     let client = state.client();
     let status = client.get_status(&api_key, &job_id).await?;
@@ -168,6 +204,7 @@ async fn poll_status(
                 result_file_name: None,
                 use_tokens: false,
                 local_path: None,
+                batch_id: None,
             };
             db::insert_job(&conn, &key_hash, &job, &json!({}))?;
             return Ok(Json(job));
@@ -180,7 +217,15 @@ async fn poll_status(
 
     // Success → download + backup immediately
     let file = client.download(&api_key, &job_id).await?;
-    let path = backup::write_backup(&state.backup_dir, &job_id, &file.file_name, &file.bytes)?;
+    let folder = backup::backup_folder_id(
+        &job_id,
+        existing.as_ref().and_then(|job| job.batch_id.as_deref()),
+    );
+    let name = backup_name(
+        existing.as_ref().map(|job| job.file_name.as_str()),
+        &file.file_name,
+    );
+    let path = backup::write_backup(&state.backup_dir, folder, name, &file.bytes)?;
     let path_str = path.display().to_string();
 
     let conn = db_lock(&state)?;
@@ -196,6 +241,7 @@ async fn poll_status(
             result_file_name: Some(file.file_name.clone()),
             use_tokens: false,
             local_path: Some(path_str.clone()),
+            batch_id: None,
         };
         db::insert_job(&conn, &key_hash, &job, &json!({}))?;
         return Ok(Json(job));
@@ -245,7 +291,15 @@ async fn download_job(
 
     let client = state.client();
     let file = client.download(&api_key, &job_id).await?;
-    let path = backup::write_backup(&state.backup_dir, &job_id, &file.file_name, &file.bytes)?;
+    let folder = backup::backup_folder_id(
+        &job_id,
+        local.as_ref().and_then(|job| job.batch_id.as_deref()),
+    );
+    let name = backup_name(
+        local.as_ref().map(|job| job.file_name.as_str()),
+        &file.file_name,
+    );
+    let path = backup::write_backup(&state.backup_dir, folder, name, &file.bytes)?;
     let path_str = path.display().to_string();
 
     {

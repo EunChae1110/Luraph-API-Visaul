@@ -28,19 +28,26 @@ pub fn sanitize_file_name(name: &str) -> String {
     }
 }
 
-pub fn backup_path(backup_dir: &Path, job_id: &str, file_name: &str) -> PathBuf {
+pub fn backup_folder_id<'a>(job_id: &'a str, batch_id: Option<&'a str>) -> &'a str {
+    match batch_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) => id,
+        None => job_id,
+    }
+}
+
+pub fn backup_path(backup_dir: &Path, folder_id: &str, file_name: &str) -> PathBuf {
     backup_dir
-        .join(sanitize_file_name(job_id))
+        .join(sanitize_file_name(folder_id))
         .join(sanitize_file_name(file_name))
 }
 
 pub fn write_backup(
     backup_dir: &Path,
-    job_id: &str,
+    folder_id: &str,
     file_name: &str,
     bytes: &[u8],
 ) -> Result<PathBuf, AppError> {
-    let path = backup_path(backup_dir, job_id, file_name);
+    let path = backup_path(backup_dir, folder_id, file_name);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             AppError::new(
